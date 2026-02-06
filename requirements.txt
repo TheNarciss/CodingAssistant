@@ -1,0 +1,9 @@
+langchain 
+langgraph 
+langchain-community
+ddgs
+beautifulsoup4 
+requests
+fastapi 
+uvicorn 
+websockets
