@@ -5,11 +5,11 @@ import json
 import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from app.config import SANDBOX_PATH
 from app.logger import get_logger
 
-# Import de ton graphe existant
+# Configuration du path
 base_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(base_dir)
 playground_dir = SANDBOX_PATH
@@ -22,7 +22,7 @@ logger = get_logger("server")
 # Autoriser le frontend (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # En dev, on autorise tout
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,7 +35,6 @@ async def websocket_endpoint(websocket: WebSocket):
     
     try:
         while True:
-            # 1. Attendre le message du Frontend (JSON)
             data = await websocket.receive_text()
             message_data = json.loads(data)
             user_input = message_data.get("message")
@@ -43,7 +42,6 @@ async def websocket_endpoint(websocket: WebSocket):
             if not user_input:
                 continue
 
-            # 2. État initial pour LangGraph
             initial_state = {
                 "messages": [HumanMessage(content=user_input)],
                 "root_dir": str(SANDBOX_PATH),
@@ -56,18 +54,17 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.info(f"📨 Reçu : {user_input}")
 
             sent_answer = False
+            last_tool_output = ""  # Track last successful tool output for fallback
 
-            # 3. Lancer le graphe et streamer les événements
             async for event in graph_app.astream(initial_state):
                 for node_name, node_content in event.items():
                     
                     response_data = {
-                        "type": "log", # Par défaut, c'est du log interne
+                        "type": "log",
                         "node": node_name,
                         "content": ""
                     }
                     
-                    # Logique d'affichage selon le nœud
                     if node_name == "planner":
                         response_data["content"] = f"🗺️ PLAN : {node_content.get('plan')}"
                     
@@ -77,7 +74,6 @@ async def websocket_endpoint(websocket: WebSocket):
                             tool = msg.tool_calls[0]
                             response_data["content"] = f"🤖 ACTION : {tool['name']}\nARGS: {json.dumps(tool['args'], indent=2)}"
                         else:
-                            # C'est la réponse finale textuelle pour l'utilisateur
                             response_data["type"] = "answer"
                             response_data["content"] = msg.content
                             sent_answer = True
@@ -94,7 +90,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                     elif node_name == "tools":
                         tool_msg = node_content["messages"][-1]
-                        response_data["content"] = f"🛠️ OUTIL RETOUR : {tool_msg.content}..."
+                        tool_content = tool_msg.content
+                        response_data["content"] = f"🛠️ OUTIL RETOUR : {tool_content[:500]}..."
+                        # Track successful tool outputs
+                        if not any(kw in tool_content.lower() for kw in ["error", "erreur", "failed"]):
+                            last_tool_output = tool_content[:300]
                         
                     elif node_name == "dispatcher":
                         step = node_content.get("step_type", "?")
@@ -112,17 +112,34 @@ async def websocket_endpoint(websocket: WebSocket):
                         if hasattr(msg, 'tool_calls') and msg.tool_calls:
                             tool = msg.tool_calls[0]
                             response_data["content"] = f"💻 CODE: {tool['name']}({tool['args']})"
+                        else:
+                            # Coder returned text instead of tool call — show it
+                            if hasattr(msg, 'content') and msg.content:
+                                response_data["content"] = f"💻 CODER: {msg.content[:300]}"
                     
                     elif node_name == "advance_step":
                         response_data["content"] = "✅ Step terminé, passage au suivant..."
-                    # Envoyer au frontend
+                    
+                    elif node_name == "fallback":
+                        response_data["content"] = "🚑 FALLBACK: Erreur détectée, correction en cours..."
+
                     await websocket.send_json(response_data)
                     
-            # Si aucune réponse utilisateur n'a été envoyée, on envoie un message par défaut
+            # ═══ FIX: Plus de "c'est bon" mensonger ═══
             if not sent_answer:
-                await websocket.send_json({"type": "answer", "content": "c'est bon"})
+                if last_tool_output:
+                    # On a des résultats d'outils mais pas de synthèse
+                    await websocket.send_json({
+                        "type": "answer", 
+                        "content": f"Task completed. Last tool output:\n{last_tool_output}"
+                    })
+                else:
+                    await websocket.send_json({
+                        "type": "answer", 
+                        "content": "⚠️ The agent encountered errors and couldn't complete the task. "
+                                   "Check the thought process panel for details, then try rephrasing your request."
+                    })
 
-            # Signaler la fin
             await websocket.send_json({"type": "done"})
             
     except WebSocketDisconnect:

@@ -11,3 +11,6 @@ langchain-ollama
 python-dotenv 
 langchain-google-genai
 langchain-openai
+numpy 
+json_repair 
+pydantic

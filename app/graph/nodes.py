@@ -6,13 +6,69 @@ import json
 from app.llm.llm_client import get_llm, get_llm_constrained
 from langchain_core.messages import SystemMessage, ToolMessage, AIMessage, HumanMessage
 from app.state.dev_state import DevState
-from app.llm.llm_client import get_llm, get_llm_constrained
-from app.utils.tool_parser import parse_tool_response
 from app.config import MAX_CONTEXT_MESSAGES
 from app.tools.terminal import run_terminal
 from app.tools.fs import list_project_structure, read_file_content, write_file, replace_lines
 from app.logger import get_logger
+from app.llm.robust_parser import parser
+
 logger = get_logger("nodes")
+
+# ═══════════════════════════════════════════════════════════
+# TOOLS MANIFEST — Injected into EVERY agent prompt
+# This is the single source of truth for tool names.
+# ═══════════════════════════════════════════════════════════
+TOOLS_MANIFEST = """### AVAILABLE TOOLS (use EXACT names — any other name will fail) ###
+- read_file_content(file_path): Read a file's content. File path is RELATIVE (e.g., "snake_game.py").
+- write_file(file_path, content): Create or overwrite a file.
+- replace_lines(file_path, start_line, end_line, new_content): Edit specific lines in a file.
+- list_project_structure(): List all files in the project.
+- run_terminal(command): Execute a shell command (ls, cat, grep, head, etc.).
+- web_search(query): Search the internet via DuckDuckGo.
+- fetch_web_page(url): Fetch a webpage's text content.
+- smart_web_fetch(query): Search + fetch best result in one shot.
+
+⚠️ CRITICAL RULES:
+- "read_file" does NOT exist. Use "read_file_content" instead.
+- "run_command" does NOT exist. Use "run_terminal" instead.
+- File paths must be RELATIVE (e.g., "main.py", NOT "/Users/.../main.py").
+- Respond with ONLY a JSON object, nothing else.
+"""
+
+
+def _build_tool_call_msg(parsed_result: dict) -> AIMessage:
+    """Helper to build an AIMessage with tool_calls from a parsed result."""
+    tool_name = parsed_result["tool"]
+    tool_args = parsed_result.get("args", {})
+    
+    # Common hallucination fixes
+    QUICK_FIXES = {
+        "run_command": "run_terminal",
+        "read_file": "read_file_content",
+    }
+    tool_name = QUICK_FIXES.get(tool_name, tool_name)
+    
+    return AIMessage(
+        content="",
+        tool_calls=[{
+            "name": tool_name,
+            "args": tool_args,
+            "id": f"call_{int(time.time())}_{id(tool_args) % 10000}"
+        }]
+    )
+
+
+def _parse_llm_response(response_content: str, context_label: str = "AGENT") -> dict:
+    """
+    Unified parsing for all agents. Returns parsed result dict.
+    Uses RobustParser (handles {"tool":...}, {"name":...}, {"function":...}, etc.)
+    """
+    parsed = parser.parse(response_content)
+    
+    if "error" in parsed:
+        logger.warning(f"⚠️ {context_label} parse error: {parsed['error']}")
+    
+    return parsed
 
 
 def call_assistant(state: DevState):
@@ -29,61 +85,55 @@ def call_assistant(state: DevState):
     optimizer_forces_click = "fetch_web_page" in guidelines and "URGENT FIX" in guidelines
     activate_trap = just_searched or optimizer_forces_click
     
+    urls = []
+    
     # --- CONSTRUCTION DU PROMPT ---
     if activate_trap:
         logger.warning("⚡ TRAP ACTIVÉ : Force fetch_web_page")
         
-        # Récupérer le contenu de la recherche pour le contexte
         search_content = ""
         for m in reversed(messages):
             if isinstance(m, ToolMessage) and getattr(m, 'name', '') == "web_search":
                 search_content = m.content
                 break
         
+        urls = re.findall(r'https?://[^\s\n,)]+', search_content)
+        
         system_content = (
             "You are a URL fetcher. Read the search results and call fetch_web_page on the best URL.\n\n"
             "### SEARCH RESULTS ###\n"
-            f"{search_content[:3000]}\n\n" # On limite un peu pour pas exploser le contexte
+            f"{search_content[:3000]}\n\n"
             "### INSTRUCTION ###\n"
             "Pick the best URL and respond with JSON: {\"tool\": \"fetch_web_page\", \"args\": {\"url\": \"...\"}}"
         )
         
-        # Extraction d'URLs de secours
-        urls = re.findall(r'https?://[^\s\n,)]+', search_content)
         llm = get_llm_constrained(tool_names=["fetch_web_page"])
         
     else:
-        # === MODIFICATION 1 : AJOUT DE L'OPTION "ANSWER" DANS LE PROMPT ===
+        # MODE NORMAL
         feedback = f"\n### FEEDBACK ###\n{guidelines}\n" if guidelines else ""
         
         system_content = (
             f"You are a Senior Autonomous Developer working in: {current_dir}.\n"
             f"### PLAN ###\n{plan}\n"
             f"{feedback}\n"
+            f"{TOOLS_MANIFEST}\n"
             "### STRATEGY ###\n"
             "Analyze the conversation. You have two options:\n"
             "1. USE A TOOL to advance the task.\n"
             "2. ANSWER the user if the task is done or if you need to explain something.\n\n"
             
-            "### EXAMPLES (JSON ONLY) ###\n"
-            "1. Tool - Create file:\n"
-            "{\"tool\": \"write_file\", \"args\": {\"file_path\": \"calc.py\", \"content\": \"...\"}}\n\n"
+            "### RESPONSE FORMAT (JSON ONLY) ###\n"
+            "Tool call:  {\"tool\": \"write_file\", \"args\": {\"file_path\": \"calc.py\", \"content\": \"...\"}}\n"
+            "Answer:     {\"answer\": \"I have finished creating the files. Here is the summary...\"}\n\n"
             
-            "2. Tool - Search:\n"
-            "{\"tool\": \"web_search\", \"args\": {\"query\": \"FastAPI tutorial\"}}\n\n"
-            
-            "3. Answer - Task Done (MANDATORY FORMAT FOR TEXT):\n"
-            "{\"answer\": \"I have finished creating the files. Here is the summary...\"}\n\n"
-            
-            "Respond with ONLY a JSON object. No text before or after."
+            "Respond with ONLY a JSON object."
         )
         
         llm = get_llm_constrained()
-        urls = []
 
     # --- SLIDING WINDOW ---
-    # (Assurez-vous que smart_context_window est importée ou définie)
-    filtered_messages = messages # ou smart_context_window(messages, MAX_CONTEXT_MESSAGES)
+    filtered_messages = messages 
     
     msg_history = [SystemMessage(content=system_content)] + filtered_messages
     
@@ -95,77 +145,47 @@ def call_assistant(state: DevState):
         elapsed = time.time() - start
         logger.debug(f"✅ LLM a répondu en {elapsed:.1f}s")
     except Exception as e:
-        logger.error(f"❌ Erreur LLM : {e}")
+        logger.error(f"❌ Erreur Invocation LLM : {e}")
         return {"messages": [AIMessage(content="Error calling LLM.")]}
     
-    # === MODIFICATION 2 : PARSING ROBUSTE (TOOL vs ANSWER) ===
-    try:
-        # Nettoyage basique si le LLM met du markdown ```json ... ```
-        content_str = response.content.strip()
-        if content_str.startswith("```json"):
-            content_str = content_str[7:]
-        if content_str.endswith("```"):
-            content_str = content_str[:-3]
-            
-        content_json = json.loads(content_str.strip())
-        
-        # CAS A : Le LLM veut répondre (ANSWER)
-        if "answer" in content_json:
-            answer_text = content_json["answer"]
-            logger.info(f"💬 RESPONSE : {answer_text[:50]}...")
-            return {"messages": [AIMessage(content=answer_text)]}
-            
-        # CAS B : Le LLM veut utiliser un outil (TOOL)
-        elif "tool" in content_json:
-            tool_name = content_json["tool"]
-            tool_args = content_json.get("args", {})
-            
-            logger.info(f"🤖 ACTION : {tool_name}")
-            
-            # Création du message d'outil standard LangChain
-            ai_msg = AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": tool_name,
-                    "args": tool_args,
-                    "id": f"call_{int(time.time())}" # ID unique
-                }]
-            )
-            return {"messages": [ai_msg]}
-            
-        else:
-            logger.warning("⚠️ JSON valide mais structure inconnue (pas de 'tool' ni 'answer')")
-            # Fallback : on considère tout le JSON comme une réponse texte
-            return {"messages": [AIMessage(content=str(content_json))]}
-
-    except json.JSONDecodeError:
-        logger.error(f"❌ Erreur JSON Decode : {response.content}")
-        
-        # --- FILET DE SÉCURITÉ (TRAP MODE) ---
+    # --- PARSING ROBUSTE ---
+    parsed_result = _parse_llm_response(response.content, "GENERATOR")
+    
+    if "error" in parsed_result:
+        # FILET DE SÉCURITÉ (TRAP MODE)
         if activate_trap and urls:
-            logger.warning(f"🔧 FORCE FETCH (Fallback JSON) sur : {urls[0]}")
+            logger.warning(f"🔧 FORCE FETCH (Fallback sur erreur) sur : {urls[0]}")
             forced_msg = AIMessage(
                 content="",
                 tool_calls=[{
-                    "id": f"forced_fetch_{state.get('retry_count', 0)}",
+                    "id": f"forced_fetch_{int(time.time())}",
                     "name": "fetch_web_page",
                     "args": {"url": urls[0]}
                 }]
             )
             return {"messages": [forced_msg]}
-            
-        return {"messages": [AIMessage(content=f"Error parsing JSON: {response.content}")]}
+        
+        return {"messages": [AIMessage(content=f"System Error: Invalid output format. {parsed_result['error']}")]}
+
+    if "answer" in parsed_result:
+        answer_text = str(parsed_result["answer"])
+        logger.info(f"💬 RESPONSE : {answer_text[:80]}...")
+        return {"messages": [AIMessage(content=answer_text)]}
+        
+    if "tool" in parsed_result:
+        ai_msg = _build_tool_call_msg(parsed_result)
+        logger.info(f"🤖 ACTION : {ai_msg.tool_calls[0]['name']}")
+        return {"messages": [ai_msg]}
+
+    return {"messages": [AIMessage(content=response.content)]}
+
 
 def search_agent(state: DevState):
-    """Sous-agent spécialisé web : ne connaît que web_search + fetch_web_page."""
+    """Sous-agent spécialisé web : web_search + fetch_web_page."""
     logger.info("🔍 SEARCH AGENT activé")
-   
     
     messages = state["messages"]
-    last_message = messages[-1]
     
-    # Si on a déjà des résultats de recherche, forcer fetch
-    # Chercher dans les 5 derniers messages si on a un résultat web_search NON suivi d'un fetch
     recent = messages[-5:]
     has_search = any(isinstance(m, ToolMessage) and getattr(m, 'name', '') == "web_search" for m in recent)
     has_fetch = any(isinstance(m, ToolMessage) and getattr(m, 'name', '') == "fetch_web_page" for m in recent)
@@ -173,7 +193,6 @@ def search_agent(state: DevState):
     
     if has_search_results:
         tool_names = ["fetch_web_page"]
-        # Trouver le dernier résultat de web_search
         search_content = ""
         for m in reversed(messages):
             if isinstance(m, ToolMessage) and getattr(m, 'name', '') == "web_search":
@@ -181,6 +200,7 @@ def search_agent(state: DevState):
                 break
         system_content = (
             "You received search results. Call fetch_web_page on the best URL.\n\n"
+            f"{TOOLS_MANIFEST}\n"
             "### EXAMPLE ###\n"
             "{\"tool\": \"fetch_web_page\", \"args\": {\"url\": \"https://example.com/page\"}}\n\n"
             f"### SEARCH RESULTS ###\n{search_content}\n\n"
@@ -195,6 +215,7 @@ def search_agent(state: DevState):
                 break
         system_content = (
             "You are a web search agent. Call web_search with a good query.\n\n"
+            f"{TOOLS_MANIFEST}\n"
             "### EXAMPLE ###\n"
             "{\"tool\": \"web_search\", \"args\": {\"query\": \"python FastAPI websocket example\"}}\n\n"
             f"### USER REQUEST ###\n{user_request[:500]}\n\n"
@@ -211,10 +232,15 @@ def search_agent(state: DevState):
     response = llm.invoke(msg_history)
     elapsed = time.time() - start
     logger.debug(f"✅ LLM a répondu en {elapsed:.1f}s : {response.content[:100]}...")
-    parsed = parse_tool_response(response.content)
+    
+    # ═══ FIX: Use RobustParser instead of tool_parser ═══
+    parsed_result = _parse_llm_response(response.content, "SEARCH_AGENT")
+    
+    if "tool" in parsed_result:
+        return {"messages": [_build_tool_call_msg(parsed_result)]}
     
     # Filet de sécurité pour fetch
-    if has_search_results and (not parsed.tool_calls):
+    if has_search_results:
         search_text = ""
         for m in reversed(messages):
             if isinstance(m, ToolMessage) and getattr(m, 'name', '') == "web_search":
@@ -222,19 +248,20 @@ def search_agent(state: DevState):
                 break
         urls = re.findall(r'https?://[^\s\n,)]+', search_text)
         if urls:
-            parsed = AIMessage(content="", tool_calls=[{
+            return {"messages": [AIMessage(content="", tool_calls=[{
                 "id": f"forced_{state.get('retry_count', 0)}",
                 "name": "fetch_web_page",
                 "args": {"url": urls[0]}
-            }])
+            }])]}
     
-    return {"messages": [parsed]}
+    # Fallback: return as text
+    content = parsed_result.get("answer", response.content)
+    return {"messages": [AIMessage(content=str(content))]}
 
 
 def coder_agent(state: DevState):
-    """Sous-agent spécialisé code : ne connaît que write_file, replace_lines, read_file_content, list_project_structure."""
+    """Sous-agent spécialisé code : write_file, replace_lines, read_file_content, list_project_structure, run_terminal."""
     logger.info("💻 CODER AGENT activé")
-
     
     messages = state["messages"]
     current_dir = state.get("root_dir", os.getcwd())
@@ -246,20 +273,16 @@ def coder_agent(state: DevState):
         f"You are a code agent working in: {current_dir}.\n"
         f"### PLAN ###\n{plan}\n"
         f"{feedback}\n"
-        "### TOOLS ###\n"
-        "- write_file(file_path, content): Create/overwrite a file\n"
-        "- replace_lines(file_path, start_line, end_line, new_content): Edit existing file\n"
-        "- read_file_content(file_path): Read a file\n"
-        "- run_terminal(command): Run a shell command (ls, grep, cat, etc.)\n"
-        "- list_project_structure(root_dir): List files\n\n"
+        f"{TOOLS_MANIFEST}\n"
+        "### RESPONSE FORMAT ###\n"
+        "Respond with a JSON object containing \"tool\" and \"args\".\n\n"
         
-        "### EXAMPLE: Create a file ###\n"
-        "{\"tool\": \"write_file\", \"args\": {\"file_path\": \"app.py\", \"content\": \"from flask import Flask\\napp = Flask(__name__)\\n\"}}\n\n"
-        
-        "### EXAMPLE: Edit a file ###\n"
-        "{\"tool\": \"replace_lines\", \"args\": {\"file_path\": \"app.py\", \"start_line\": 10, \"end_line\": 12, \"new_content\": \"return 42\"}}\n\n"
-        "### EXAMPLE: List files ###\n"
-        "{\"tool\": \"run_terminal\", \"args\": {\"command\": \"ls -la\"}}\n\n"
+        "### EXAMPLES ###\n"
+        "Read a file:  {\"tool\": \"read_file_content\", \"args\": {\"file_path\": \"main.py\"}}\n"
+        "Create file:  {\"tool\": \"write_file\", \"args\": {\"file_path\": \"app.py\", \"content\": \"from flask import Flask\\n\"}}\n"
+        "Edit file:    {\"tool\": \"replace_lines\", \"args\": {\"file_path\": \"app.py\", \"start_line\": 10, \"end_line\": 12, \"new_content\": \"return 42\"}}\n"
+        "Run command:  {\"tool\": \"run_terminal\", \"args\": {\"command\": \"cat main.py\"}}\n"
+        "List files:   {\"tool\": \"list_project_structure\", \"args\": {}}\n\n"
         
         "Respond with JSON only. ONE tool call."
     )
@@ -268,12 +291,15 @@ def coder_agent(state: DevState):
     llm = get_llm_constrained(tool_names=tool_names)
     
     filtered = [m for m in messages if not isinstance(m, SystemMessage)][-15:]
-    # Tronquer les messages trop longs (résultats de fetch)
+    # Tronquer les messages trop longs
     truncated = []
     for m in filtered:
         if isinstance(m, ToolMessage) and len(m.content) > 1500:
-            from langchain_core.messages import ToolMessage as TM
-            truncated.append(TM(content=m.content[:1500] + "\n...[tronqué]", tool_call_id=m.tool_call_id, name=getattr(m, 'name', '')))
+            truncated.append(ToolMessage(
+                content=m.content[:1500] + "\n...[tronqué]",
+                tool_call_id=m.tool_call_id,
+                name=getattr(m, 'name', '')
+            ))
         else:
             truncated.append(m)
     filtered = truncated
@@ -284,18 +310,27 @@ def coder_agent(state: DevState):
     response = llm.invoke(msg_history)
     elapsed = time.time() - start
     logger.debug(f"✅ LLM a répondu en {elapsed:.1f}s : {response.content[:100]}...")
-    parsed = parse_tool_response(response.content)
     
-    return {"messages": [parsed]}
+    # ═══ FIX: Use RobustParser instead of tool_parser ═══
+    parsed_result = _parse_llm_response(response.content, "CODER")
+    
+    if "tool" in parsed_result:
+        return {"messages": [_build_tool_call_msg(parsed_result)]}
+    
+    if "answer" in parsed_result:
+        return {"messages": [AIMessage(content=str(parsed_result["answer"]))]}
+    
+    # Error or unparseable → return as text (will trigger fallback via route_after_agent)
+    error_msg = parsed_result.get("error", f"Unexpected response: {response.content[:200]}")
+    return {"messages": [AIMessage(content=f"Parse error: {error_msg}")]}
+
 
 def research_agent(state: DevState):
     """Agent spécialisé web : utilise smart_web_fetch."""
     logger.info("🔬 RESEARCH AGENT activé")
- 
     
     messages = state["messages"]
     
-    # Extraire la requête user
     user_request = ""
     for m in reversed(messages):
         if hasattr(m, 'content') and isinstance(m.content, str) and len(m.content) > 10:
@@ -304,6 +339,7 @@ def research_agent(state: DevState):
     
     system_content = (
         "You are a research agent. Call smart_web_fetch with a good search query.\n\n"
+        f"{TOOLS_MANIFEST}\n"
         "### EXAMPLE ###\n"
         "{\"tool\": \"smart_web_fetch\", \"args\": {\"query\": \"python FastAPI websocket tutorial\"}}\n\n"
         f"### USER REQUEST ###\n{user_request[:500]}\n\n"
@@ -320,9 +356,16 @@ def research_agent(state: DevState):
     response = llm.invoke(msg_history)
     elapsed = time.time() - start
     logger.debug(f"✅ LLM a répondu en {elapsed:.1f}s : {response.content[:100]}...")
-    parsed = parse_tool_response(response.content)
     
-    return {"messages": [parsed]}
+    # ═══ FIX: Use RobustParser instead of tool_parser ═══
+    parsed_result = _parse_llm_response(response.content, "RESEARCH")
+    
+    if "tool" in parsed_result:
+        return {"messages": [_build_tool_call_msg(parsed_result)]}
+    
+    content = parsed_result.get("answer", response.content)
+    return {"messages": [AIMessage(content=str(content))]}
+
 
 def smart_context_window(messages: list, max_messages: int = 20) -> list:
     """Garde TOUJOURS le premier message user + les N derniers."""
@@ -331,19 +374,16 @@ def smart_context_window(messages: list, max_messages: int = 20) -> list:
     if len(filtered) <= max_messages:
         return filtered
     
-    # Garder le premier message user
     first_user = next((m for m in filtered if hasattr(m, 'content')), None)
-    
-    # Garder les N-1 derniers
     recent = filtered[-(max_messages - 1):]
     
     return [first_user] + recent if first_user else recent
+
 
 def synthesizer_node(state: DevState):
     """Résume les résultats de recherche pour l'user."""
     messages = state["messages"]
     
-    # Trouver le dernier fetch
     fetch_content = ""
     for m in reversed(messages):
         if isinstance(m, ToolMessage) and getattr(m, 'name', '') == "fetch_web_page":
