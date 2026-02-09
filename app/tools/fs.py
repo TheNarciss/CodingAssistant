@@ -1,43 +1,30 @@
 # app/tools/fs.py
 from langchain_core.tools import tool
 from pathlib import Path
+from app.config import SANDBOX_PATH, FILE_CONTENT_MAX_CHARS
 
 # --- CONFIGURATION DU SANDBOX ---
-# On définit le chemin relatif par rapport au dossier CodingAssistant
-# Note: J'ai gardé ta typo "Playgroud" pour être sûr que ça matche ta demande ;)
-BASE_DIR = Path(__file__).resolve().parents[2]
-SANDBOX_PATH = BASE_DIR / "PlaygroudForCodingAssistant"
+
 
 # On s'assure que le dossier existe, sinon on le crée
 SANDBOX_PATH.mkdir(parents=True, exist_ok=True)
 
 def _sanitize_relative_path(file_path: str) -> str:
+    """Nettoie le chemin en supprimant les préfixes inutiles."""
     if not file_path:
         return file_path
 
-    p = Path(file_path)
-
-    if p.is_absolute():
-        try:
-            return p.resolve().relative_to(SANDBOX_PATH.resolve()).as_posix()
-        except Exception:
-            parts = p.parts
-            if "PlaygroudForCodingAssistant" in parts:
-                idx = len(parts) - 1 - list(reversed(parts)).index("PlaygroudForCodingAssistant")
-                rel_parts = parts[idx + 1:]
-                return Path(*rel_parts).as_posix()
-            return p.name
-
-    parts = p.parts
-    if "PlaygroudForCodingAssistant" in parts:
-        idx = len(parts) - 1 - list(reversed(parts)).index("PlaygroudForCodingAssistant")
-        rel_parts = parts[idx + 1:]
-        return Path(*rel_parts).as_posix()
-
-    if parts and parts[0] in ("CodingAssistant", "codingassistant"):
-        return Path(*parts[1:]).as_posix()
-
-    return file_path
+    path = Path(file_path)
+    
+    # Supprimer les préfixes connus
+    parts_to_remove = {"PlaygroundForCodingAssistant", "CodingAssistant", "codingassistant"}
+    clean_parts = [p for p in path.parts if p not in parts_to_remove]
+    
+    # Si chemin absolu, garder juste le nom si tout est supprimé
+    if not clean_parts:
+        return path.name
+    
+    return Path(*clean_parts).as_posix()
 
 def get_safe_path(file_path: str) -> Path:
     """
@@ -56,12 +43,12 @@ def get_safe_path(file_path: str) -> Path:
     return full_path
 
 @tool
-def list_project_structure(root_dir: str = "."):
+def list_project_structure():
     """
     Explore the sandbox directory and return the file tree structure.
     """
     try:
-        # On ignore l'argument root_dir de l'agent et on force le SANDBOX
+        
         base_path = SANDBOX_PATH
         
         excluded = {".git", ".venv", "__pycache__", ".DS_Store", "node_modules"}
@@ -98,8 +85,8 @@ def read_file_content(file_path: str):
             return f"Erreur : {file_path} est un répertoire."
 
         content = path.read_text(encoding="utf-8")
-        if len(content) > 10000:
-            return content[:10000] + "\n... [Contenu tronqué]"
+        if len(content) > FILE_CONTENT_MAX_CHARS:
+            return content[:FILE_CONTENT_MAX_CHARS] + "\n... [Contenu tronqué]"
             
         return content
     except ValueError as ve:
@@ -125,29 +112,31 @@ def write_file(file_path: str, content: str):
     except Exception as e:
         return f"Erreur écriture : {str(e)}"
 
+
 @tool
-def smart_replace(file_path: str, target_snippet: str, replacement_snippet: str):
-    """
-    Replace a text snippet in a file within the sandbox.
-    """
+def replace_lines(file_path: str, start_line: int, end_line: int, new_content: str):
+    """Replace lines [start_line, end_line] with new_content. Lines are 1-indexed."""
     try:
         path = get_safe_path(file_path)
+        
         if not path.exists():
-            return f"Erreur : Fichier {file_path} introuvable."
-            
-        content = path.read_text(encoding="utf-8")
+            return f"Error: file {file_path} not found"
         
-        if target_snippet not in content:
-            return "Erreur : Snippet cible introuvable (vérifie l'indentation)."
-            
-        if content.count(target_snippet) > 1:
-            return "Erreur : Snippet non unique."
-            
-        new_content = content.replace(target_snippet, replacement_snippet)
-        path.write_text(new_content, encoding="utf-8")
-        
-        return "Succès : Modification appliquée."
+        lines = path.read_text().splitlines()
+
+        # Validation
+        if not (1 <= start_line <= len(lines)):
+            return f"Error: line {start_line} out of range"
+        if not (1 <= end_line <= len(lines)):
+            return f"Error: line {end_line} out of range"
+        if start_line > end_line:
+            return "Error: start_line must be <= end_line"
+
+        # Remplacement
+        new_lines = lines[:start_line - 1] + [new_content] + lines[end_line:]
+        path.write_text('\n'.join(new_lines), encoding="utf-8")
+        return f"Success: lines {start_line}-{end_line} replaced in {file_path}"
     except ValueError as ve:
         return str(ve)
     except Exception as e:
-        return f"Erreur smart_replace : {str(e)}"
+        return f"Error replacing lines: {e}"

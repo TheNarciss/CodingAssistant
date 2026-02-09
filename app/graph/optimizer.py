@@ -1,5 +1,10 @@
 # app/graph/optimizer.py
 from app.state.dev_state import DevState
+from app.config import MAX_RETRIES
+from app.logger import get_logger
+
+logger = get_logger("optimizer")
+
 
 def prompt_optimizer_node(state: DevState):
     """
@@ -10,7 +15,7 @@ def prompt_optimizer_node(state: DevState):
     current_count = state.get("retry_count", 0)
     new_count = current_count + 1
     
-    print(f"\n💉 OPTIMIZER : Injection stratégie (Essai {new_count}/3)...")
+    logger.warning(f"\n💉 OPTIMIZER : Injection stratégie (Essai {new_count}/{MAX_RETRIES})...")
     
     # 2. Récupération sécurisée du feedback
     feedback = state.get("review_feedback")
@@ -50,7 +55,7 @@ def prompt_optimizer_node(state: DevState):
             "STRATEGY: Analyze the error and correct the syntax."
         )
 
-    final_guidelines = f"⚠️ URGENT FIX (Attempt {new_count}/3): {current_guidelines}"
+    final_guidelines = f"⚠️ URGENT FIX (Attempt {new_count}/{MAX_RETRIES}): {current_guidelines}"
 
     return {
         "dynamic_guidelines": final_guidelines,

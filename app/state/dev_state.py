@@ -30,3 +30,25 @@ class DevState(TypedDict):
     plan_steps: list                  # Liste des étapes parsées ["SEARCH:query", "FETCH", "CODE:description"]
     current_step: int                 # Index de l'étape en cours
     step_type: Optional[str]  
+
+def make_initial_state(messages, root_dir: str = "", **overrides) -> dict:
+    """Crée un état initial avec des valeurs par défaut saines."""
+    defaults = {
+        "messages": messages,
+        "root_dir": root_dir,
+        "active_file": None,
+        "error_history": [],
+        "current_task": "",
+        "iteration_count": 0,
+        "plan": None,
+        "review_feedback": None,
+        "code_quality_score": None,
+        "retry_count": 0,
+        "last_error": None,
+        "dynamic_guidelines": None,
+        "plan_steps": [],
+        "current_step": 0,
+        "step_type": None,
+    }
+    defaults.update(overrides)
+    return defaults

@@ -2,32 +2,37 @@
 from typing import Dict, Any
 from langchain_core.messages import ToolMessage
 from app.state.dev_state import DevState
+from app.config import MAX_RETRIES
+from app.logger import get_logger
+
+logger = get_logger("fallback")
 
 def fallback_node(state: DevState) -> Dict[str, Any]:
     """
     Nœud de réparation. Activé quand le ToolNode plante ou que le LLM fait du JSON invalide.
     """
-    print("\n🚑 FALLBACK ACTIVÉ : Tentative de réparation...")
+    logger.warning("\n🚑 FALLBACK ACTIVÉ : Tentative de réparation...")
     
     messages = state["messages"]
     last_message = messages[-1]
     current_retries = state.get("retry_count", 0)
 
     # Sécurité anti-boucle infinie
-    if current_retries >= 3:
-        # On injecte un faux résultat d'outil pour dire "STOP"
+    if current_retries >= MAX_RETRIES:
         tool_call_id = "error_id"
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             tool_call_id = last_message.tool_calls[0]["id"]
         fallback_msg = ToolMessage(
             tool_call_id=tool_call_id,
-            content="ERREUR CRITIQUE : Trop d'échecs consécutifs. J'arrête d'essayer d'utiliser cet outil."
+            content="ERREUR CRITIQUE : Step skipped après trop d'échecs."
         )
         return {
             "messages": [fallback_msg],
             "retry_count": 0,
-            "last_error": "Max retries reached"
+            "last_error": "Max retries reached",
+            "current_step": state.get("current_step", 0) + 1 
         }
+
 
     # On prépare le message qui gronde gentiment le LLM
     error_feedback = (

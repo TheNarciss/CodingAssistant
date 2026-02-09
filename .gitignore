@@ -5,7 +5,7 @@ venv/
 .venv/
 .env/
 .env.*
-PlaygroudForCodingAssistant/
+PlaygroundForCodingAssistant/
 .DS_Store
 *.log
 *.pyc

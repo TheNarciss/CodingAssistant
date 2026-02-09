@@ -3,10 +3,9 @@ from langchain_core.tools import tool
 from pathlib import Path
 import subprocess
 import shlex
+from app.config import SANDBOX_PATH
 
-# Sandbox racine (même logique que fs.py)
-BASE_DIR = Path(__file__).resolve().parents[2]
-SANDBOX_PATH = BASE_DIR / "PlaygroudForCodingAssistant"
+
 SANDBOX_PATH.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_COMMANDS = {

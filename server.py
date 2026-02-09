@@ -6,15 +6,18 @@ import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage
+from app.config import SANDBOX_PATH
+from app.logger import get_logger
 
 # Import de ton graphe existant
 base_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(base_dir)
-playground_dir = os.path.join(base_dir, "PlaygroudForCodingAssistant")
+playground_dir = SANDBOX_PATH
 os.makedirs(playground_dir, exist_ok=True)
 from app.graph.graph import app as graph_app
 
 app = FastAPI()
+logger = get_logger("server")
 
 # Autoriser le frontend (CORS)
 app.add_middleware(
@@ -28,7 +31,7 @@ app.add_middleware(
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("🔌 Client connecté")
+    logger.info("🔌 Client connecté")
     
     try:
         while True:
@@ -43,14 +46,14 @@ async def websocket_endpoint(websocket: WebSocket):
             # 2. État initial pour LangGraph
             initial_state = {
                 "messages": [HumanMessage(content=user_input)],
-                "root_dir": playground_dir,
+                "root_dir": str(SANDBOX_PATH),
                 "retry_count": 0,
                 "plan_steps": [],
                 "current_step": 0,
                 "step_type": None,
             }
             
-            print(f"📨 Reçu : {user_input}")
+            logger.info(f"📨 Reçu : {user_input}")
 
             sent_answer = False
 
@@ -123,7 +126,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json({"type": "done"})
             
     except WebSocketDisconnect:
-        print("Client déconnecté")
+        logger.info("Client déconnecté")
     except Exception as e:
-        print(f"Erreur : {e}")
+        logger.error(f"Erreur : {e}")
         await websocket.close()
