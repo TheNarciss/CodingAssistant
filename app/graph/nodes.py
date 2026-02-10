@@ -11,6 +11,7 @@ from app.tools.terminal import run_terminal
 from app.tools.fs import list_project_structure, read_file_content, write_file, replace_lines
 from app.logger import get_logger
 from app.llm.robust_parser import parser
+from app.utils.smart_context_window import smart_context_window
 
 logger = get_logger("nodes")
 
@@ -133,9 +134,9 @@ def call_assistant(state: DevState):
         llm = get_llm_constrained()
 
     # --- SLIDING WINDOW ---
-    filtered_messages = messages 
-    
+    filtered_messages = smart_context_window(messages)
     msg_history = [SystemMessage(content=system_content)] + filtered_messages
+
     
     # --- APPEL LLM ---
     logger.debug(f"⏳ Envoi au LLM... (context: {len(msg_history)} messages)")
@@ -224,7 +225,7 @@ def search_agent(state: DevState):
     
     llm = get_llm_constrained(tool_names=tool_names)
     
-    filtered = [m for m in messages if not isinstance(m, SystemMessage)][-10:]
+    filtered = smart_context_window(messages, max_messages=10)
     msg_history = [SystemMessage(content=system_content)] + filtered
     
     logger.debug(f"⏳ Envoi au LLM... (context: {len(msg_history)} messages)")
@@ -289,20 +290,7 @@ def coder_agent(state: DevState):
     
     tool_names = ["write_file", "replace_lines", "read_file_content", "list_project_structure", "run_terminal"]
     llm = get_llm_constrained(tool_names=tool_names)
-    
-    filtered = [m for m in messages if not isinstance(m, SystemMessage)][-15:]
-    # Tronquer les messages trop longs
-    truncated = []
-    for m in filtered:
-        if isinstance(m, ToolMessage) and len(m.content) > 1500:
-            truncated.append(ToolMessage(
-                content=m.content[:1500] + "\n...[tronqué]",
-                tool_call_id=m.tool_call_id,
-                name=getattr(m, 'name', '')
-            ))
-        else:
-            truncated.append(m)
-    filtered = truncated
+    filtered = smart_context_window(messages)
     msg_history = [SystemMessage(content=system_content)] + filtered
     
     logger.debug(f"⏳ Envoi au LLM... (context: {len(msg_history)} messages)")
@@ -348,7 +336,7 @@ def research_agent(state: DevState):
     
     llm = get_llm_constrained(tool_names=["smart_web_fetch"])
     
-    filtered = [m for m in messages if not isinstance(m, SystemMessage)][-10:]
+    filtered = smart_context_window(messages, max_messages=10)
     msg_history = [SystemMessage(content=system_content)] + filtered
     
     logger.debug(f"⏳ Envoi au LLM... (context: {len(msg_history)} messages)")
@@ -365,20 +353,6 @@ def research_agent(state: DevState):
     
     content = parsed_result.get("answer", response.content)
     return {"messages": [AIMessage(content=str(content))]}
-
-
-def smart_context_window(messages: list, max_messages: int = 20) -> list:
-    """Garde TOUJOURS le premier message user + les N derniers."""
-    filtered = [m for m in messages if not isinstance(m, SystemMessage)]
-    
-    if len(filtered) <= max_messages:
-        return filtered
-    
-    first_user = next((m for m in filtered if hasattr(m, 'content')), None)
-    recent = filtered[-(max_messages - 1):]
-    
-    return [first_user] + recent if first_user else recent
-
 
 def synthesizer_node(state: DevState):
     """Résume les résultats de recherche pour l'user."""
