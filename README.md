@@ -218,16 +218,16 @@ Watch the activity panel on the right to see each node's thought process in real
 
 All settings are in `app/config.py`:
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `MODEL_NAME` | `llama3.2:3b` | Ollama model name |
-| `MODEL_TEMPERATURE` | `0.0` | LLM temperature (0 = deterministic) |
-| `MAX_RETRIES` | `3` | Max fallback retries before giving up |
-| `MAX_CONTEXT_MESSAGES` | `15` | Messages kept in LLM context window |
-| `MAX_PLAN_STEPS` | `5` | Max steps the planner can generate |
-| `WEB_SEARCH_MAX_RESULTS` | `5` | DuckDuckGo results per search |
-| `WEB_PAGE_MAX_CHARS` | `5000` | Max chars fetched from a webpage |
-| `FILE_CONTENT_MAX_CHARS` | `10000` | Max chars when reading a file |
+ | Setting | Default | Description |
+ |---------|---------|-------------|
+ | `MODEL_NAME` | `llama3.2:3b` | Ollama model name |
+ | `MODEL_TEMPERATURE` | `0.0` | LLM temperature (0 = deterministic) |
+ | `MAX_RETRIES` | `3` | Max fallback retries before giving up |
+ | `MAX_CONTEXT_MESSAGES` | `15` | Messages kept in LLM context window |
+ | `MAX_PLAN_STEPS` | `5` | Max steps the planner can generate |
+ | `WEB_SEARCH_MAX_RESULTS` | `5` | DuckDuckGo results per search |
+ | `WEB_PAGE_MAX_CHARS` | `5000` | Max chars fetched from a webpage |
+ | `FILE_CONTENT_MAX_CHARS` | `10000` | Max chars when reading a file |
 
 ---
 
