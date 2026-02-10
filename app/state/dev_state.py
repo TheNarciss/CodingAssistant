@@ -8,9 +8,8 @@ class DevState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     root_dir: str
     active_file: Optional[str]
-    error_history: List[str]
     current_task: str
-    iteration_count: int
+   
 
     # --- NOUVEAUX CHAMPS (Architecture 8 Nœuds) ---
     
@@ -37,9 +36,7 @@ def make_initial_state(messages, root_dir: str = "", **overrides) -> dict:
         "messages": messages,
         "root_dir": root_dir,
         "active_file": None,
-        "error_history": [],
         "current_task": "",
-        "iteration_count": 0,
         "plan": None,
         "review_feedback": None,
         "code_quality_score": None,

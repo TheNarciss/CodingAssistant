@@ -162,7 +162,7 @@ def route_after_tools(state: DevState) -> str:
                 is_error = True
 
         if is_error:
-            print(f"⚠️ Erreur outil détectée ({tool_name}) → Direction Fallback")
+            logger.warning(f"⚠️ Erreur outil détectée ({tool_name}) → Direction Fallback")
             return "fallback"
     
     # --- 2. GESTION DU PLAN (Code existant inchangé) ---
@@ -170,14 +170,14 @@ def route_after_tools(state: DevState) -> str:
         current = state.get("current_step", 0)
         
         if current < len(steps) - 1:
-            print(f"⏩ Étape {current+1}/{len(steps)} terminée → Suivante")
+            logger.info(f"⏩ Étape {current+1}/{len(steps)} terminée → Suivante")
             return "advance_step"
             
-        print("✅ Dernière étape du plan terminée → Retour au Generator pour bilan")
+        logger.info("✅ Dernière étape du plan terminée → Retour au Generator pour bilan")
         return "generator"
 
     # --- 3. MODE CONVERSATION ---
-    print("✅ Action unique terminée → Retour au Generator")
+    logger.info("✅ Action unique terminée → Retour au Generator")
     return "generator"
 
 def entry_router(state: DevState) -> str:

@@ -98,17 +98,17 @@ DISALLOWED_TOKENS = {">", "<", "|", ";", "&", "&&"}
 
 def _validate_command(command: str) -> list[str]:
     if not command or not command.strip():
-        raise ValueError("Commande vide.")
+        raise ValueError("Empty command.")
 
     # NOTE : J'ai supprimé le bloc qui interdisait "cd" ici.
 
     try:
         parts = shlex.split(command)
     except ValueError:
-        raise ValueError("Erreur de syntaxe shell.")
+        raise ValueError("Shell syntax error.")
 
     if not parts:
-        raise ValueError("Commande vide.")
+        raise ValueError("Empty command.")
 
     # 2. Vérification des tokens interdits
     if any(token in command for token in DISALLOWED_TOKENS):

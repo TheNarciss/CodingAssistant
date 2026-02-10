@@ -55,7 +55,7 @@ def list_project_structure():
         files_list = []
         
         if not base_path.exists():
-            return "Le répertoire de travail est vide (nouveau projet)."
+            return "Working directory is empty (new project)."
 
         for path in base_path.rglob("*"):
             if not any(part in excluded for part in path.parts):
@@ -64,11 +64,11 @@ def list_project_structure():
                     files_list.append(str(path.relative_to(base_path)))
         
         if not files_list:
-            return "Le répertoire est vide."
+            return "Directory is empty."
             
         return "\n".join(files_list[:100])
     except Exception as e:
-        return f"Erreur lors du listage : {str(e)}"
+        return f"Error listing files: {str(e)}"
 
 @tool
 def read_file_content(file_path: str):
@@ -79,10 +79,10 @@ def read_file_content(file_path: str):
         path = get_safe_path(file_path)
         
         if not path.exists():
-            return f"Erreur : Le fichier {file_path} n'existe pas."
+            return f"Error: file {file_path} not found."
         
         if path.is_dir():
-            return f"Erreur : {file_path} est un répertoire."
+            return f"Error: {file_path} is a directory."
 
         content = path.read_text(encoding="utf-8")
         if len(content) > FILE_CONTENT_MAX_CHARS:
@@ -92,7 +92,7 @@ def read_file_content(file_path: str):
     except ValueError as ve:
         return str(ve)
     except Exception as e:
-        return f"Erreur lecture : {str(e)}"
+        return f"Error reading file: {str(e)}"
 
 @tool
 def write_file(file_path: str, content: str):
@@ -106,11 +106,11 @@ def write_file(file_path: str, content: str):
         path.parent.mkdir(parents=True, exist_ok=True)
         
         path.write_text(content, encoding="utf-8")
-        return f"Succès : Fichier {file_path} sauvegardé."
+        return f"Success: file {file_path} saved."
     except ValueError as ve:
         return str(ve)
     except Exception as e:
-        return f"Erreur écriture : {str(e)}"
+        return f"Error writing file: {str(e)}"
 
 
 @tool
@@ -133,7 +133,7 @@ def replace_lines(file_path: str, start_line: int, end_line: int, new_content: s
             return "Error: start_line must be <= end_line"
 
         # Remplacement
-        new_lines = lines[:start_line - 1] + [new_content] + lines[end_line:]
+        new_lines = lines[:start_line - 1] + new_content.split('\n') + lines[end_line:]
         path.write_text('\n'.join(new_lines), encoding="utf-8")
         return f"Success: lines {start_line}-{end_line} replaced in {file_path}"
     except ValueError as ve:

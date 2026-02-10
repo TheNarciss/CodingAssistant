@@ -181,84 +181,6 @@ def call_assistant(state: DevState):
     return {"messages": [AIMessage(content=response.content)]}
 
 
-def search_agent(state: DevState):
-    """Sous-agent spécialisé web : web_search + fetch_web_page."""
-    logger.info("🔍 SEARCH AGENT activé")
-    
-    messages = state["messages"]
-    
-    recent = messages[-5:]
-    has_search = any(isinstance(m, ToolMessage) and getattr(m, 'name', '') == "web_search" for m in recent)
-    has_fetch = any(isinstance(m, ToolMessage) and getattr(m, 'name', '') == "fetch_web_page" for m in recent)
-    has_search_results = has_search and not has_fetch
-    
-    if has_search_results:
-        tool_names = ["fetch_web_page"]
-        search_content = ""
-        for m in reversed(messages):
-            if isinstance(m, ToolMessage) and getattr(m, 'name', '') == "web_search":
-                search_content = m.content[:2000]
-                break
-        system_content = (
-            "You received search results. Call fetch_web_page on the best URL.\n\n"
-            f"{TOOLS_MANIFEST}\n"
-            "### EXAMPLE ###\n"
-            "{\"tool\": \"fetch_web_page\", \"args\": {\"url\": \"https://example.com/page\"}}\n\n"
-            f"### SEARCH RESULTS ###\n{search_content}\n\n"
-            "Respond with JSON only."
-        )
-    else:
-        tool_names = ["web_search"]
-        user_request = ""
-        for m in reversed(messages):
-            if hasattr(m, 'content') and isinstance(m.content, str) and len(m.content) > 10:
-                user_request = m.content
-                break
-        system_content = (
-            "You are a web search agent. Call web_search with a good query.\n\n"
-            f"{TOOLS_MANIFEST}\n"
-            "### EXAMPLE ###\n"
-            "{\"tool\": \"web_search\", \"args\": {\"query\": \"python FastAPI websocket example\"}}\n\n"
-            f"### USER REQUEST ###\n{user_request[:500]}\n\n"
-            "Respond with JSON only."
-        )
-    
-    llm = get_llm_constrained(tool_names=tool_names)
-    
-    filtered = smart_context_window(messages, max_messages=10)
-    msg_history = [SystemMessage(content=system_content)] + filtered
-    
-    logger.debug(f"⏳ Envoi au LLM... (context: {len(msg_history)} messages)")
-    start = time.time()
-    response = llm.invoke(msg_history)
-    elapsed = time.time() - start
-    logger.debug(f"✅ LLM a répondu en {elapsed:.1f}s : {response.content[:100]}...")
-    
-    # ═══ FIX: Use RobustParser instead of tool_parser ═══
-    parsed_result = _parse_llm_response(response.content, "SEARCH_AGENT")
-    
-    if "tool" in parsed_result:
-        return {"messages": [_build_tool_call_msg(parsed_result)]}
-    
-    # Filet de sécurité pour fetch
-    if has_search_results:
-        search_text = ""
-        for m in reversed(messages):
-            if isinstance(m, ToolMessage) and getattr(m, 'name', '') == "web_search":
-                search_text = m.content
-                break
-        urls = re.findall(r'https?://[^\s\n,)]+', search_text)
-        if urls:
-            return {"messages": [AIMessage(content="", tool_calls=[{
-                "id": f"forced_{state.get('retry_count', 0)}",
-                "name": "fetch_web_page",
-                "args": {"url": urls[0]}
-            }])]}
-    
-    # Fallback: return as text
-    content = parsed_result.get("answer", response.content)
-    return {"messages": [AIMessage(content=str(content))]}
-
 
 def coder_agent(state: DevState):
     """Sous-agent spécialisé code : write_file, replace_lines, read_file_content, list_project_structure, run_terminal."""
@@ -354,18 +276,3 @@ def research_agent(state: DevState):
     content = parsed_result.get("answer", response.content)
     return {"messages": [AIMessage(content=str(content))]}
 
-def synthesizer_node(state: DevState):
-    """Résume les résultats de recherche pour l'user."""
-    messages = state["messages"]
-    
-    fetch_content = ""
-    for m in reversed(messages):
-        if isinstance(m, ToolMessage) and getattr(m, 'name', '') == "fetch_web_page":
-            fetch_content = m.content[:3000]
-            break
-    
-    llm = get_llm()
-    prompt = f"Summarize this for the user:\n\n{fetch_content}"
-    response = llm.invoke([HumanMessage(content=prompt)])
-    
-    return {"messages": [AIMessage(content=response.content)]}

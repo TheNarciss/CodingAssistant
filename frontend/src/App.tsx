@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type ReactNode } from 'react'
+import React, { useState, useRef, useEffect, type ReactNode } from 'react'
 import {
   Send, Cpu, Bot, User, Trash2, Wifi, WifiOff,
   ChevronRight, Sparkles, FileCode, Search, Eye,
@@ -109,6 +109,28 @@ function ActivityTicker({ logs, onClick }: { logs: Log[]; onClick: () => void })
 }
 
 // ── Main ─────────────────────────────────────────────────
+class ErrorBoundary extends React.Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh',
+          background: '#09090b', color: '#a1a1aa', fontFamily: 'monospace',
+        }}>
+          <p>Something went wrong. Please refresh the page.</p>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 function App() {
   const [input, setInput] = useState('')
   const [logs, setLogs] = useState<Log[]>([])
@@ -539,4 +561,10 @@ function App() {
   )
 }
 
-export default App
+export default function WrappedApp() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  )
+}

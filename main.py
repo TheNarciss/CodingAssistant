@@ -20,7 +20,10 @@ def run_agent():
     logger.info(f"📂 Dossier surveillé : {root_path}")
     
     # La requête de test
-    user_question = "say hello"
+    user_question = input("💬 Your request: ").strip()
+    if not user_question:
+        print("No input provided.")
+        return
     
     # État initial
     initial_state = make_initial_state(

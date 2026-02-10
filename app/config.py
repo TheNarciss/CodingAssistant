@@ -35,18 +35,23 @@ FILE_CONTENT_MAX_CHARS = 10000
 MIN_FILE_CONTENT_LENGTH = 10
 
 class PlanCache:
-    def __init__(self, ttl=300):  # 5 minutes
+    def __init__(self, ttl=300, maxsize=50):
         self.cache = {}
         self.ttl = ttl
+        self.maxsize = maxsize
     
     def get(self, query: str):
         if query in self.cache:
             plan, timestamp = self.cache[query]
             if time.time() - timestamp < self.ttl:
                 return plan
+            del self.cache[query]
         return None
     
     def set(self, query: str, plan: dict):
+        if len(self.cache) >= self.maxsize:
+            oldest_key = min(self.cache, key=lambda k: self.cache[k][1])
+            del self.cache[oldest_key]
         self.cache[query] = (plan, time.time())
 
 plan_cache = PlanCache()

@@ -16,6 +16,7 @@ def _get_openrouter(model_name=None, temperature=MODEL_TEMPERATURE):
         temperature=temperature,
         api_key=OPEN_API_KEY,
         base_url="https://openrouter.ai/api/v1", # <--- L'URL magique
+        request_timeout=60,
         default_headers={
             "HTTP-Referer": "http://localhost:3000", # Requis par OpenRouter pour les stats
             "X-Title": "DevAssistant"
@@ -29,6 +30,7 @@ def _get_ollama(model_name=None, temperature=MODEL_TEMPERATURE):
         temperature=temperature,
         base_url=OLLAMA_BASE_URL,
         keep_alive=MODEL_KEEP_ALIVE,
+        timeout=60,
     )
 
 def _get_ollama_constrained(model_name=None, temperature=MODEL_TEMPERATURE, tool_names=None):
@@ -44,6 +46,7 @@ def _get_ollama_constrained(model_name=None, temperature=MODEL_TEMPERATURE, tool
         temperature=temperature,
         base_url=OLLAMA_BASE_URL,
         keep_alive=MODEL_KEEP_ALIVE,
+        timeout=60,
         format="json" # Simplifié, ou gardez votre structure complexe si nécessaire
     )
 
@@ -63,7 +66,7 @@ def get_llm(model_name=None, temperature=MODEL_TEMPERATURE):
             logger.warning(f"⚠️ OpenRouter indisponible ({e}), fallback Ollama...")
     
     logger.info(f"🏠 LLM : Ollama ({model_name or MODEL_NAME})")
-    return _get_ollama(model_name, temperature)
+    return _get_ollama(model_name, temperature, request_timeout=60)
 
 
 def get_llm_constrained(model_name=None, temperature=MODEL_TEMPERATURE, tool_names=None):

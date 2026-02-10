@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
 from app.config import SANDBOX_PATH
 from app.logger import get_logger
+from app.state.dev_state import make_initial_state
 
 # Configuration du path
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -22,7 +23,7 @@ logger = get_logger("server")
 # Autoriser le frontend (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,14 +43,10 @@ async def websocket_endpoint(websocket: WebSocket):
             if not user_input:
                 continue
 
-            initial_state = {
-                "messages": [HumanMessage(content=user_input)],
-                "root_dir": str(SANDBOX_PATH),
-                "retry_count": 0,
-                "plan_steps": [],
-                "current_step": 0,
-                "step_type": None,
-            }
+            initial_state = make_initial_state(
+                messages=conversation_history + [HumanMessage(content=user_input)],
+                root_dir=str(SANDBOX_PATH),
+            )
             
             logger.info(f"📨 Reçu : {user_input}")
 

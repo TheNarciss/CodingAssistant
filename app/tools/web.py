@@ -18,7 +18,7 @@ def web_search(query: str):
         # max_results=3 pour économiser le contexte du petit modèle
         results = DDGS().text(query, max_results=WEB_SEARCH_MAX_RESULTS)
         if not results:
-            return "Aucun résultat trouvé."
+            return "No results found."
         
         formatted = []
         for res in results:
@@ -26,7 +26,7 @@ def web_search(query: str):
             
         return "\n---\n".join(formatted)
     except Exception as e:
-        return f"Erreur de recherche : {str(e)}"
+        return f"Search error: {str(e)}"
 
 @tool
 def fetch_web_page(url: str):
@@ -45,7 +45,7 @@ def fetch_web_page(url: str):
         # response.raise_for_status() # On évite ça pour gérer l'erreur manuellement ci-dessous
         
         if response.status_code != 200:
-             return f"Erreur HTTP {response.status_code} lors de l'accès à {url}"
+               return f"HTTP error {response.status_code} accessing {url}"
 
         # Nettoyage du HTML avec BeautifulSoup
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -69,7 +69,7 @@ def fetch_web_page(url: str):
         return clean_text
 
     except Exception as e:
-        return f"Erreur lors de la lecture de la page : {e}"
+        return f"Error fetching page: {e}"
     
 @tool
 def smart_web_fetch(query: str):
