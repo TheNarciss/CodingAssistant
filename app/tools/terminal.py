@@ -6,13 +6,17 @@ import shlex
 import os
 from app.config import SANDBOX_PATH
 
-# S'assurer que le dossier existe
+# --- ÉTAT GLOBAL (Mémoire du dossier courant) ---
+# S'assurer que le dossier racine existe
 SANDBOX_PATH.mkdir(parents=True, exist_ok=True)
+
+# Au démarrage, on est dans le sandbox
+CURRENT_WORKING_DIR = SANDBOX_PATH
 
 # Liste élargie pour un Coding Assistant viable
 ALLOWED_COMMANDS = {
     # --- Navigation & Fichiers de base ---
-    "pwd", "ls", "cd", # (cd est géré virtuellement, mais on l'autorise dans la liste pour ne pas bloquer le parser)
+    "pwd", "ls", "cd", 
     "mkdir", "touch", "cp", "mv", "rm", "rmdir", 
     "ln", "readlink", # Liens symboliques
     "find", "locate", "whereis", "which",
@@ -96,9 +100,7 @@ def _validate_command(command: str) -> list[str]:
     if not command or not command.strip():
         raise ValueError("Commande vide.")
 
-    # 1. Gestion spécifique pour 'cd' qui ne marche pas avec subprocess
-    if command.strip().startswith("cd "):
-        raise ValueError("Erreur: La commande 'cd' n'est pas supportée (le terminal est stateless). Utilisez des chemins absolus ou relatifs dans vos autres commandes.")
+    # NOTE : J'ai supprimé le bloc qui interdisait "cd" ici.
 
     try:
         parts = shlex.split(command)
@@ -109,8 +111,6 @@ def _validate_command(command: str) -> list[str]:
         raise ValueError("Commande vide.")
 
     # 2. Vérification des tokens interdits
-    # Note: shlex.split gère mal les pipes s'ils ne sont pas quotés, 
-    # donc on check aussi la string brute pour la sécurité
     if any(token in command for token in DISALLOWED_TOKENS):
          raise ValueError(f"Opérateurs shell interdits ({', '.join(DISALLOWED_TOKENS)}). Exécutez une seule commande à la fois.")
 
@@ -118,7 +118,6 @@ def _validate_command(command: str) -> list[str]:
     
     # 3. Vérification de la commande principale
     if cmd not in ALLOWED_COMMANDS:
-        # On peut être plus explicite sur l'erreur
         raise ValueError(f"Commande '{cmd}' non autorisée. Commandes dev dispos: python, pip, git, npm, ls, etc.")
 
     return parts
@@ -128,19 +127,42 @@ def _validate_command(command: str) -> list[str]:
 def run_terminal(command: str):
     """
     Exécute une commande terminal.
+    Supporte 'cd' pour changer de dossier (l'état est conservé).
     Outils Dev autorisés : python, pip, git, npm, ls, cat, grep, etc.
-    Limitation : 'cd' ne fonctionne pas (stateless). Utilisez des chemins relatifs depuis la racine.
     """
+    global CURRENT_WORKING_DIR # On accède à la mémoire globale du dossier
+
     try:
         # Nettoyage préventif
         command = command.strip()
-        
         parts = _validate_command(command)
         
-        # Exécution
+        # --- GESTION SPÉCIALE DU 'CD' ---
+        if parts[0] == "cd":
+            if len(parts) < 2:
+                # 'cd' tout seul = retour à la racine du sandbox
+                target_dir = SANDBOX_PATH
+            else:
+                # 'cd chemin'
+                path_arg = parts[1]
+                # Résolution du chemin par rapport au dossier courant
+                # .resolve() gère les '..' et les chemins relatifs
+                target_dir = (CURRENT_WORKING_DIR / path_arg).resolve()
+
+            # Vérifications de sécurité et d'existence
+            if not target_dir.exists():
+                return f"Erreur: Le dossier '{target_dir}' n'existe pas."
+            if not target_dir.is_dir():
+                return f"Erreur: '{target_dir}' n'est pas un dossier."
+            
+            # Mise à jour de la mémoire
+            CURRENT_WORKING_DIR = target_dir
+            return f"Dossier courant changé vers : {CURRENT_WORKING_DIR}"
+
+        # --- EXÉCUTION DES AUTRES COMMANDES ---
         result = subprocess.run(
             parts,
-            cwd=str(SANDBOX_PATH), # Tout s'exécute dans le dossier du projet
+            cwd=str(CURRENT_WORKING_DIR), # On utilise le dossier mémorisé !
             capture_output=True,
             text=True,
             check=False,
