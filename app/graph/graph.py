@@ -4,6 +4,7 @@ from langgraph.prebuilt import ToolNode
 from langchain_core.messages import ToolMessage
 
 from app.state.dev_state import DevState
+from app.config import MAX_ITERATIONS
 from app.graph.nodes import call_assistant, coder_agent, research_agent
 from app.graph.planner import planner_node, should_plan
 from app.graph.reviewer import reviewer_node
@@ -14,6 +15,7 @@ from app.tools.fs import list_project_structure, read_file_content, write_file, 
 from app.tools.web import web_search, fetch_web_page, smart_web_fetch
 from app.tools.terminal import run_terminal
 from app.logger import get_logger
+from app.tools.registry import VALID_TOOLS, SAFE_TOOLS_NO_REVIEW, TOOL_ALIASES
 
 logger = get_logger("graph")
 
@@ -52,8 +54,9 @@ def dispatcher_node(state: DevState):
 def advance_step_node(state: DevState):
     """Avance au step suivant après exécution réussie d'un outil."""
     current = state.get("current_step", 0)
+    iteration = state.get("iteration_count", 0)
     logger.info(f"⏩ Étape {current + 1} terminée → passage à la suivante")
-    return {"current_step": current + 1}
+    return {"current_step": current + 1, "iteration_count": iteration + 1}
 
 
 # ============================================================
@@ -79,6 +82,11 @@ def route_after_agent(state: DevState) -> str:
     """Après un agent : si tool_call → reviewer. Sinon → vérifier le contexte."""
     last_msg = state["messages"][-1]
     retry_count = state.get("retry_count", 0)
+
+    iteration = state.get("iteration_count", 0)
+    if iteration >= MAX_ITERATIONS:
+        logger.error(f"🛑 GLOBAL LIMIT: {MAX_ITERATIONS} iterations reached → END")
+        return END
     
     # 1. Sécurité anti-boucle globale
     if retry_count >= 3:
@@ -130,6 +138,11 @@ def route_after_tools(state: DevState) -> str:
     """
     Routeur post-exécution d'outil.
     """
+    iteration = state.get("iteration_count", 0)
+    if iteration >= 15:
+        logger.error(f"🛑 ITERATION LIMIT ({iteration}) → END")
+        return END
+
     last_msg = state["messages"][-1]
     steps = state.get("plan_steps", [])
     
@@ -152,13 +165,16 @@ def route_after_tools(state: DevState) -> str:
             # Cas spécial : HTTP errors souvent courtes
             if "404 not found" in content[:50] or "403 forbidden" in content[:50]:
                 is_error = True
-        
+
         # Pour les outils système (terminal, fs), on peut scanner un peu plus large
         else:
-            # On cherche les mots clés mais on évite les faux positifs simples
-            if any(content.startswith(p) for p in error_prefixes):
+            # "File not found" est informatif pour les outils de lecture
+            if tool_name in ("read_file_content", "list_project_structure"):
+                if any(content.startswith(p) for p in ["erreur lecture", "erreur lors", "accès refusé", "error replacing"]):
+                    is_error = True
+            elif any(content.startswith(p) for p in error_prefixes):
                 is_error = True
-            elif "interdits" in content: # Votre sécurité shell
+            elif "interdits" in content:  # Votre sécurité shell
                 is_error = True
 
         if is_error:
@@ -179,6 +195,11 @@ def route_after_tools(state: DevState) -> str:
     # --- 3. MODE CONVERSATION ---
     logger.info("✅ Action unique terminée → Retour au Generator")
     return "generator"
+def tool_node_with_counter(state: DevState):
+    """Wrap ToolNode to increment iteration_count."""
+    result = tool_node.invoke(state)
+    result["iteration_count"] = state.get("iteration_count", 0) + 1
+    return result
 
 def entry_router(state: DevState) -> str:
     return "generator" if not should_plan(state) else "planner"
@@ -212,7 +233,7 @@ workflow.add_node("research_agent", research_agent)
 workflow.add_node("coder_agent", coder_agent)
 workflow.add_node("generator", call_assistant)
 workflow.add_node("reviewer", reviewer_node)
-workflow.add_node("tools", tool_node)
+workflow.add_node("tools", tool_node_with_counter)
 workflow.add_node("fallback", fallback_node)
 workflow.add_node("optimizer", prompt_optimizer_node)
 workflow.add_node("advance_step", advance_step_node)

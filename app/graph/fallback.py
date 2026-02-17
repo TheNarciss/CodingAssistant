@@ -4,15 +4,10 @@ from langchain_core.messages import ToolMessage
 from app.state.dev_state import DevState
 from app.config import MAX_RETRIES
 from app.logger import get_logger
-
+from app.tools.registry import VALID_TOOLS_LIST_STR
 logger = get_logger("fallback")
 
 # Valid tools list (kept in sync with reviewer.py)
-VALID_TOOLS_LIST = (
-    "read_file_content, write_file, replace_lines, "
-    "list_project_structure, run_terminal, "
-    "web_search, fetch_web_page, smart_web_fetch"
-)
 
 def fallback_node(state: DevState) -> Dict[str, Any]:
     """
@@ -55,7 +50,7 @@ def fallback_node(state: DevState) -> Dict[str, Any]:
     error_feedback = (
         f"⚠️ YOUR LAST TOOL CALL FAILED.\n\n"
         f"ACTUAL ERROR:\n{actual_error}\n\n"
-        f"VALID TOOLS (use EXACT names):\n{VALID_TOOLS_LIST}\n\n"
+        f"VALID TOOLS (use EXACT names):\n{VALID_TOOLS_LIST_STR}\n\n"
         f"COMMON FIXES:\n"
         f"- 'read_file' does NOT exist → use 'read_file_content'\n"
         f"- 'run_command' does NOT exist → use 'run_terminal'\n"

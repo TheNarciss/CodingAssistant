@@ -1,62 +1,13 @@
 # app/graph/reviewer.py
 from langchain_core.messages import SystemMessage, HumanMessage
 from app.state.dev_state import DevState
-from app.llm.llm_client import get_llm
 from app.config import MIN_FILE_CONTENT_LENGTH
 from app.logger import get_logger
+from app.tools.registry import VALID_TOOLS, SAFE_TOOLS_NO_REVIEW, TOOL_ALIASES
 
 logger = get_logger("reviewer")
 
-# ═══ ALL valid tool names (source of truth) ═══
-VALID_TOOLS = {
-    "web_search", "fetch_web_page", "smart_web_fetch",
-    "write_file", "read_file_content", "replace_lines",
-    "list_project_structure", "run_terminal"
-}
 
-# Tools that don't need LLM review (read-only or search)
-SAFE_TOOLS_NO_REVIEW = {
-    "web_search", 
-    "fetch_web_page",
-    "read_file_content",
-    "list_project_structure",
-    "replace_lines",
-    "smart_web_fetch",
-    "run_terminal"
-}
-
-# ═══ Auto-correction map for common LLM hallucinations ═══
-TOOL_ALIASES = {
-    "read_file": "read_file_content",
-    "read": "read_file_content",
-    "readfile": "read_file_content",
-    "read_content": "read_file_content",
-    "file_read": "read_file_content",
-    "get_file": "read_file_content",
-    "get_file_content": "read_file_content",
-    "open_file": "read_file_content",
-    "cat": "read_file_content",
-    "run_command": "run_terminal",
-    "execute": "run_terminal",
-    "exec": "run_terminal",
-    "shell": "run_terminal",
-    "terminal": "run_terminal",
-    "command": "run_terminal",
-    "bash": "run_terminal",
-    "search": "web_search",
-    "google": "web_search",
-    "search_web": "web_search",
-    "fetch": "fetch_web_page",
-    "fetch_page": "fetch_web_page",
-    "scrape": "fetch_web_page",
-    "list_files": "list_project_structure",
-    "ls": "list_project_structure",
-    "list_dir": "list_project_structure",
-    "tree": "list_project_structure",
-    "create_file": "write_file",
-    "save_file": "write_file",
-    "edit_file": "replace_lines",
-}
 
 
 def reviewer_node(state: DevState):

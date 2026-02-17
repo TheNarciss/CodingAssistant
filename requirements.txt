@@ -14,3 +14,4 @@ langchain-openai
 numpy 
 json_repair 
 pydantic
+watchfiles

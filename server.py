@@ -3,12 +3,13 @@ import sys
 import os
 import json
 import asyncio
+import shutil
+from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from app.config import SANDBOX_PATH
 from app.logger import get_logger
-from app.state.dev_state import make_initial_state
 
 # Configuration du path
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,16 +24,49 @@ logger = get_logger("server")
 # Autoriser le frontend (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+async def safe_send(ws: WebSocket, data: dict) -> bool:
+    """Returns False if connection is dead."""
+    try:
+        await ws.send_json(data)
+        return True
+    except (RuntimeError, WebSocketDisconnect):
+        return False
+
+
+@app.post("/api/cleanup")
+async def cleanup_sandbox():
+    """Delete all files in the sandbox."""
+    sandbox = Path(SANDBOX_PATH)
+    for item in sandbox.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+    return {"status": "ok", "message": "Sandbox cleaned"}
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     logger.info("🔌 Client connecté")
+
+    async def heartbeat():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                await websocket.send_json({"type": "ping"})
+        except Exception:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+
+    conversation_history = []
     
     try:
         while True:
@@ -43,14 +77,21 @@ async def websocket_endpoint(websocket: WebSocket):
             if not user_input:
                 continue
 
-            initial_state = make_initial_state(
-                messages=conversation_history + [HumanMessage(content=user_input)],
-                root_dir=str(SANDBOX_PATH),
-            )
+            conversation_history.append(HumanMessage(content=user_input))
+
+            initial_state = {
+                "messages": list(conversation_history),
+                "root_dir": str(SANDBOX_PATH),
+                "retry_count": 0,
+                "plan_steps": [],
+                "current_step": 0,
+                "step_type": None,
+            }
             
             logger.info(f"📨 Reçu : {user_input}")
 
             sent_answer = False
+            last_sent_content = ""
             last_tool_output = ""  # Track last successful tool output for fallback
 
             async for event in graph_app.astream(initial_state):
@@ -74,6 +115,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             response_data["type"] = "answer"
                             response_data["content"] = msg.content
                             sent_answer = True
+                            last_sent_content = msg.content
                             
                     elif node_name == "reviewer":
                         score = node_content.get("code_quality_score")
@@ -120,27 +162,41 @@ async def websocket_endpoint(websocket: WebSocket):
                     elif node_name == "fallback":
                         response_data["content"] = "🚑 FALLBACK: Erreur détectée, correction en cours..."
 
-                    await websocket.send_json(response_data)
+                    if not await safe_send(websocket, response_data):
+                        break
                     
             # ═══ FIX: Plus de "c'est bon" mensonger ═══
             if not sent_answer:
                 if last_tool_output:
                     # On a des résultats d'outils mais pas de synthèse
-                    await websocket.send_json({
+                    if not await safe_send(websocket, {
                         "type": "answer", 
                         "content": f"Task completed. Last tool output:\n{last_tool_output}"
-                    })
+                    }):
+                        break
                 else:
-                    await websocket.send_json({
+                    if not await safe_send(websocket, {
                         "type": "answer", 
                         "content": "⚠️ The agent encountered errors and couldn't complete the task. "
                                    "Check the thought process panel for details, then try rephrasing your request."
-                    })
+                    }):
+                        break
 
-            await websocket.send_json({"type": "done"})
+            if sent_answer:
+                conversation_history.append(AIMessage(content=last_sent_content))
+
+            if len(conversation_history) > 30:
+                conversation_history = conversation_history[:1] + conversation_history[-28:]
+
+            await safe_send(websocket, {"type": "done"})
             
     except WebSocketDisconnect:
         logger.info("Client déconnecté")
     except Exception as e:
         logger.error(f"Erreur : {e}")
-        await websocket.close()
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass
+    finally:
+        heartbeat_task.cancel()

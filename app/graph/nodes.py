@@ -12,29 +12,11 @@ from app.tools.fs import list_project_structure, read_file_content, write_file, 
 from app.logger import get_logger
 from app.llm.robust_parser import parser
 from app.utils.smart_context_window import smart_context_window
+from app.tools.registry import TOOLS_MANIFEST, TOOL_ALIASES
 
 logger = get_logger("nodes")
 
-# ═══════════════════════════════════════════════════════════
-# TOOLS MANIFEST — Injected into EVERY agent prompt
-# This is the single source of truth for tool names.
-# ═══════════════════════════════════════════════════════════
-TOOLS_MANIFEST = """### AVAILABLE TOOLS (use EXACT names — any other name will fail) ###
-- read_file_content(file_path): Read a file's content. File path is RELATIVE (e.g., "snake_game.py").
-- write_file(file_path, content): Create or overwrite a file.
-- replace_lines(file_path, start_line, end_line, new_content): Edit specific lines in a file.
-- list_project_structure(): List all files in the project.
-- run_terminal(command): Execute a shell command (ls, cat, grep, head, etc.).
-- web_search(query): Search the internet via DuckDuckGo.
-- fetch_web_page(url): Fetch a webpage's text content.
-- smart_web_fetch(query): Search + fetch best result in one shot.
 
-⚠️ CRITICAL RULES:
-- "read_file" does NOT exist. Use "read_file_content" instead.
-- "run_command" does NOT exist. Use "run_terminal" instead.
-- File paths must be RELATIVE (e.g., "main.py", NOT "/Users/.../main.py").
-- Respond with ONLY a JSON object, nothing else.
-"""
 
 
 def _build_tool_call_msg(parsed_result: dict) -> AIMessage:
@@ -72,66 +54,69 @@ def _parse_llm_response(response_content: str, context_label: str = "AGENT") -> 
     return parsed
 
 
+def _build_fetch_trap(state: DevState) -> dict | None:
+    """If we just searched and need to fetch, return a forced fetch tool call."""
+    messages = state["messages"]
+    last_message = messages[-1]
+    guidelines = state.get("dynamic_guidelines", "")
+
+    just_searched = isinstance(last_message, ToolMessage) and getattr(last_message, 'name', '') == "web_search"
+    optimizer_forces_click = "fetch_web_page" in guidelines and "URGENT FIX" in guidelines
+
+    if not (just_searched or optimizer_forces_click):
+        return None
+
+    search_content = ""
+    for m in reversed(messages):
+        if isinstance(m, ToolMessage) and getattr(m, 'name', '') == "web_search":
+            search_content = m.content
+            break
+
+    urls = re.findall(r'https?://[^\s\n,)]+', search_content)
+    if urls:
+        return {"messages": [AIMessage(content="", tool_calls=[{
+            "id": f"fetch_trap_{int(time.time())}",
+            "name": "fetch_web_page",
+            "args": {"url": urls[0]}
+        }])]}
+    return None
+
+
 def call_assistant(state: DevState):
     logger.info("🤖 GENERATOR : Analyse du contexte...")
+
+    # Trap mode: auto-fetch after search
+    trap_result = _build_fetch_trap(state)
+    if trap_result:
+        logger.warning("⚡ TRAP: Auto-fetching best URL from search results")
+        return trap_result
     
     current_dir = state.get("root_dir", ".")
     plan = state.get("plan", "No plan provided.")
     messages = state["messages"]
-    last_message = messages[-1]
     guidelines = state.get("dynamic_guidelines", "")
-    
-    # --- DÉTECTION DU MODE ---
-    just_searched = isinstance(last_message, ToolMessage) and getattr(last_message, 'name', '') == "web_search"
-    optimizer_forces_click = "fetch_web_page" in guidelines and "URGENT FIX" in guidelines
-    activate_trap = just_searched or optimizer_forces_click
-    
-    urls = []
-    
-    # --- CONSTRUCTION DU PROMPT ---
-    if activate_trap:
-        logger.warning("⚡ TRAP ACTIVÉ : Force fetch_web_page")
-        
-        search_content = ""
-        for m in reversed(messages):
-            if isinstance(m, ToolMessage) and getattr(m, 'name', '') == "web_search":
-                search_content = m.content
-                break
-        
-        urls = re.findall(r'https?://[^\s\n,)]+', search_content)
-        
-        system_content = (
-            "You are a URL fetcher. Read the search results and call fetch_web_page on the best URL.\n\n"
-            "### SEARCH RESULTS ###\n"
-            f"{search_content[:3000]}\n\n"
-            "### INSTRUCTION ###\n"
-            "Pick the best URL and respond with JSON: {\"tool\": \"fetch_web_page\", \"args\": {\"url\": \"...\"}}"
-        )
-        
-        llm = get_llm_constrained(tool_names=["fetch_web_page"])
-        
-    else:
-        # MODE NORMAL
-        feedback = f"\n### FEEDBACK ###\n{guidelines}\n" if guidelines else ""
-        
-        system_content = (
-            f"You are a Senior Autonomous Developer working in: {current_dir}.\n"
-            f"### PLAN ###\n{plan}\n"
-            f"{feedback}\n"
-            f"{TOOLS_MANIFEST}\n"
-            "### STRATEGY ###\n"
-            "Analyze the conversation. You have two options:\n"
-            "1. USE A TOOL to advance the task.\n"
-            "2. ANSWER the user if the task is done or if you need to explain something.\n\n"
-            
-            "### RESPONSE FORMAT (JSON ONLY) ###\n"
-            "Tool call:  {\"tool\": \"write_file\", \"args\": {\"file_path\": \"calc.py\", \"content\": \"...\"}}\n"
-            "Answer:     {\"answer\": \"I have finished creating the files. Here is the summary...\"}\n\n"
-            
-            "Respond with ONLY a JSON object."
-        )
-        
-        llm = get_llm_constrained()
+
+    # MODE NORMAL
+    feedback = f"\n### FEEDBACK ###\n{guidelines}\n" if guidelines else ""
+
+    system_content = (
+        f"You are a Senior Autonomous Developer working in: {current_dir}.\n"
+        f"### PLAN ###\n{plan}\n"
+        f"{feedback}\n"
+        f"{TOOLS_MANIFEST}\n"
+        "### STRATEGY ###\n"
+        "Analyze the conversation. You have two options:\n"
+        "1. USE A TOOL to advance the task.\n"
+        "2. ANSWER the user if the task is done or if you need to explain something.\n\n"
+
+        "### RESPONSE FORMAT (JSON ONLY) ###\n"
+        "Tool call:  {\"tool\": \"write_file\", \"args\": {\"file_path\": \"calc.py\", \"content\": \"...\"}}\n"
+        "Answer:     {\"answer\": \"I have finished creating the files. Here is the summary...\"}\n\n"
+
+        "Respond with ONLY a JSON object."
+    )
+
+    llm = get_llm_constrained()
 
     # --- SLIDING WINDOW ---
     filtered_messages = smart_context_window(messages)
@@ -153,19 +138,6 @@ def call_assistant(state: DevState):
     parsed_result = _parse_llm_response(response.content, "GENERATOR")
     
     if "error" in parsed_result:
-        # FILET DE SÉCURITÉ (TRAP MODE)
-        if activate_trap and urls:
-            logger.warning(f"🔧 FORCE FETCH (Fallback sur erreur) sur : {urls[0]}")
-            forced_msg = AIMessage(
-                content="",
-                tool_calls=[{
-                    "id": f"forced_fetch_{int(time.time())}",
-                    "name": "fetch_web_page",
-                    "args": {"url": urls[0]}
-                }]
-            )
-            return {"messages": [forced_msg]}
-        
         return {"messages": [AIMessage(content=f"System Error: Invalid output format. {parsed_result['error']}")]}
 
     if "answer" in parsed_result:

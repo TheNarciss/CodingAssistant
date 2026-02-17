@@ -105,8 +105,18 @@ def write_file(file_path: str, content: str):
         # Création des dossiers parents si nécessaire
         path.parent.mkdir(parents=True, exist_ok=True)
         
+        existed = path.exists()
+        old_content = path.read_text(encoding="utf-8") if existed else None
+
         path.write_text(content, encoding="utf-8")
-        return f"Success: file {file_path} saved."
+
+        if existed:
+            return (
+                f"Succès : Fichier {file_path} modifié.\n"
+                f"[DIFF_BEFORE]{old_content[:500]}[/DIFF_BEFORE]\n"
+                f"[DIFF_AFTER]{content[:500]}[/DIFF_AFTER]"
+            )
+        return f"Succès : Fichier {file_path} créé ({len(content)} chars)."
     except ValueError as ve:
         return str(ve)
     except Exception as e:
@@ -122,7 +132,7 @@ def replace_lines(file_path: str, start_line: int, end_line: int, new_content: s
         if not path.exists():
             return f"Error: file {file_path} not found"
         
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
 
         # Validation
         if not (1 <= start_line <= len(lines)):
@@ -132,10 +142,16 @@ def replace_lines(file_path: str, start_line: int, end_line: int, new_content: s
         if start_line > end_line:
             return "Error: start_line must be <= end_line"
 
+        old_section = "\n".join(lines[start_line - 1:end_line])
+
         # Remplacement
         new_lines = lines[:start_line - 1] + new_content.split('\n') + lines[end_line:]
         path.write_text('\n'.join(new_lines), encoding="utf-8")
-        return f"Success: lines {start_line}-{end_line} replaced in {file_path}"
+        return (
+            f"Success: lines {start_line}-{end_line} replaced in {file_path}\n"
+            f"[DIFF_BEFORE]{old_section[:300]}[/DIFF_BEFORE]\n"
+            f"[DIFF_AFTER]{new_content[:300]}[/DIFF_AFTER]"
+        )
     except ValueError as ve:
         return str(ve)
     except Exception as e:

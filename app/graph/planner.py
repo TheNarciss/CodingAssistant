@@ -4,10 +4,49 @@ from app.state.dev_state import DevState
 from app.llm.llm_client import get_llm
 from app.config import MAX_PLAN_STEPS, plan_cache
 from app.logger import get_logger
-from langchain_core.messages import HumanMessage
 import re
 
 logger = get_logger("planner")
+
+PLAN_TEMPLATES = {
+    "create_single": {
+        "pattern": lambda r, w: len(w) <= 8 and any(k in r for k in ["create", "make", "write", "build"]) and "and" not in r,
+        "plan": lambda r: f"[CODE] {r}",
+    },
+    "read_and_fix": {
+        "pattern": lambda r, w: any(k in r for k in ["fix", "debug", "refactor"]),
+        "plan": lambda r: "[READ] read the file to understand the issue\n[CODE] apply the fix",
+    },
+    "generate_from_file": {
+        "pattern": lambda r, w: any(k in r for k in ["based on", "from", "generate"]) and any(k in r for k in ["read", "file", ".py", ".js", ".ts"]),
+        "plan": lambda r: "[READ] read the source file\n[CODE] generate the output based on what was read",
+    },
+    "search_task": {
+        "pattern": lambda r, w: any(k in r for k in ["search", "find", "how to", "what is", "research"]),
+        "plan": lambda r: f"[RESEARCH] search for: {r}",
+    },
+}
+
+
+def _match_template(user_request: str) -> dict | None:
+    lower = user_request.lower().strip()
+    words = lower.split()
+    for _, tmpl in PLAN_TEMPLATES.items():
+        if tmpl["pattern"](lower, words):
+            plan_text = tmpl["plan"](user_request)
+            steps = []
+            for line in plan_text.split("\n"):
+                match = re.match(r'\[?(RESEARCH|CODE|READ)\]?\s*(.*)', line, re.IGNORECASE)
+                if match:
+                    steps.append(f"{match.group(1).upper()}:{match.group(2).strip()}")
+            if steps:
+                return {
+                    "plan": plan_text,
+                    "plan_steps": steps,
+                    "current_step": 0,
+                    "step_type": steps[0].split(":")[0].lower(),
+                }
+    return None
 
 def planner_node(state: DevState):
     messages = state["messages"]
@@ -36,6 +75,13 @@ def planner_node(state: DevState):
         if cached:
             logger.info("♻️ CACHE HIT: Using cached plan")
             return cached
+
+    # --- 2b. CHECK TEMPLATES (skip LLM if match) ---
+    template_result = _match_template(user_request)
+    if template_result:
+        logger.info("📋 TEMPLATE MATCH: Skipping LLM call")
+        plan_cache.set(cache_key, template_result)
+        return template_result
 
     # --- 3. GÉNÉRATION DU PLAN ---
     logger.info(f"🗺️ PLANNER : Élaboration du plan technique pour '{user_request[:50]}...'")
@@ -125,49 +171,44 @@ def planner_node(state: DevState):
 
 
 def should_plan(state: DevState) -> bool:
-    """
-    Détermine si la requête nécessite un plan multi-étapes.
-    
-    ═══ FIX: Logique inversée — par défaut on planifie, sauf si c'est trivial ═══
-    """
     msg = state["messages"][-1]
     if not hasattr(msg, 'content'):
         return False
-    
+
     request = msg.content.lower().strip()
     words = request.split()
-    
-    # ═══ TRIVIAL: Pas besoin de plan ═══
+
+    # TRIVIAL: No plan needed
+    if len(words) <= 3 and not any(w in request for w in ["fix", "debug", "refactor", "based"]):
+        return False
+
     trivial_exact = {
         "hello", "hi", "hey", "bonjour", "salut",
-        "help", "aide", "list files", "show files"
+        "help", "aide", "list files", "show files",
+        "what can you do", "who are you",
     }
     if request in trivial_exact:
         return False
-    
-    # Single-tool tasks: simple create/write with short request
+
+    # Questions → no plan, let generator answer directly
+    if request.endswith("?") and len(words) <= 10 and not any(w in request for w in ["create", "build", "make", "write", "fix"]):
+        return False
+
+    # Simple single-file creation
     if len(words) <= 6 and any(w in request for w in ["create", "write", "make"]):
-        # "create a snake game" → simple, pas de plan
-        # "create requirements.txt based on snake.py" → needs plan (has "based on")
-        if not any(w in request for w in ["based on", "from", "for", "and", "then", "after"]):
+        if not any(w in request for w in ["based on", "from", "and", "then", "after", "for each"]):
             return False
-    
-    # ═══ COMPLEX: Needs a plan ═══
-    # Multi-step indicators
-    if any(phrase in request for phrase in ["and then", "based on", "from", " for ", "after that"]):
+
+    # COMPLEX: Needs a plan
+    multi_step_signals = ["and then", "based on", "after that", "step by step", "for each", "first", "finally"]
+    if any(phrase in request for phrase in multi_step_signals):
         return True
-    
-    # Tasks that require reading first
-    if any(w in request for w in ["read", "fix", "debug", "refactor", "analyze", "generate", "update", "modify"]):
+
+    if any(w in request for w in ["fix", "debug", "refactor", "analyze", "update", "modify", "generate"]):
         return True
-    
-    # Research tasks
-    if any(w in request for w in ["search", "find", "research", "compare", "how to", "what is"]):
+
+    if len(words) > 12:
         return True
-    
-    # Long requests are probably complex
-    if len(words) > 10:
-        return True
-    
-    # Default: plan for safety (better to over-plan than under-plan)
-    return True
+
+    # Default: no plan (was True before — caused over-planning for simple tasks)
+    return False

@@ -33,7 +33,7 @@ WEB_PAGE_MAX_CHARS = 5000
 # Tool Limits
 FILE_CONTENT_MAX_CHARS = 10000
 MIN_FILE_CONTENT_LENGTH = 10
-
+MAX_ITERATIONS = 30
 class PlanCache:
     def __init__(self, ttl=300, maxsize=50):
         self.cache = {}
